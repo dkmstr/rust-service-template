@@ -4,15 +4,7 @@ use windows::{
 
 use crate::launcher;
 
-const SERVICE_NAME: &str = "RustExampleService";
-
-fn wide(s: &str) -> Vec<u16> {
-    use std::os::windows::ffi::OsStrExt;
-    std::ffi::OsStr::new(s)
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect()
-}
+const SERVICE_NAME: PCWSTR = w!("RustExampleService");
 
 #[derive(Clone, Debug)]
 struct ServiceContext {
@@ -120,15 +112,12 @@ extern "system" fn service_handler(
 
 extern "system" fn service_main(_argc: u32, _argv: *mut PWSTR) {
     unsafe {
-        // RegisterServiceCtrlHandlerExW -> Result<SERVICE_STATUS_HANDLE>
-        let name = wide(SERVICE_NAME);
-
-        // Registramos el handler, pasando un puntero a nuestro contexto
+        // Register the service control handler, with our context
         let mut ctx = ServiceContext::new();
 
         let ctx_ptr: *mut ServiceContext = &mut ctx;
         ctx.status_handle = match RegisterServiceCtrlHandlerExW(
-            PCWSTR(name.as_ptr()),
+            SERVICE_NAME,
             Some(service_handler),
             Some(ctx_ptr as *mut _),
         ) {
@@ -151,7 +140,7 @@ extern "system" fn service_main(_argc: u32, _argv: *mut PWSTR) {
             ctx_thread.stop().unwrap();
         });
 
-        // esperar indefinidamente
+        // Wait until the stop event is signaled
         let _ = ctx.wait_for_stop(INFINITE);
 
         let _ = ctx.report_status(SERVICE_STOPPED, 0, 0);
@@ -161,10 +150,9 @@ extern "system" fn service_main(_argc: u32, _argv: *mut PWSTR) {
 
 pub fn run_service() -> Result<()> {
     // Service Table: StartServiceCtrlDispatcherW(*const SERVICE_TABLE_ENTRYW) -> Result<()>
-    let name = wide(SERVICE_NAME);
     let table = [
         SERVICE_TABLE_ENTRYW {
-            lpServiceName: PWSTR(name.as_ptr() as *mut u16),
+            lpServiceName: PWSTR(SERVICE_NAME.0 as *mut _),
             lpServiceProc: Some(service_main),
         },
         SERVICE_TABLE_ENTRYW {
@@ -177,4 +165,47 @@ pub fn run_service() -> Result<()> {
         StartServiceCtrlDispatcherW(table.as_ptr())?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_stop_signals_notify_and_event() {
+        let mut ctx = ServiceContext::new();
+        ctx.status_handle = SERVICE_STATUS_HANDLE::default(); // dummy
+
+        let ctx_ptr: *mut ServiceContext = &mut ctx;
+
+        // Set up a thread to wait for the notify
+        let notify = ctx.async_stop.clone();
+        
+        let ctx_clone = ctx.clone();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                notify.notified().await;
+                ctx_clone.stop().unwrap();
+            });
+        });
+
+        // Wait a bit to ensure the thread is waiting
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // Simulate the service control handler receiving a STOP command
+        service_handler(
+            SERVICE_CONTROL_STOP,
+            0,
+            std::ptr::null_mut(),
+            ctx_ptr as *mut _,
+        );
+
+        // We only reach here if stop is called
+        if ctx.wait_for_stop(1000).unwrap() != WAIT_OBJECT_0 {
+            panic!("Stop event was not signaled");
+        }
+
+        let _ = ctx.close();
+    }
 }
