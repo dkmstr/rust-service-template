@@ -180,14 +180,18 @@ mod tests {
 
         // Set up a thread to wait for the notify
         let notify = ctx.async_stop.clone();
-        
+
         let ctx_clone = ctx.clone();
         std::thread::spawn(move || {
-            let rt = tokio::runtime::Runtime::new().unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all() // Enable timers, I/O, etc.
+                .build()
+                .unwrap();
+
             rt.block_on(async {
                 notify.notified().await;
-                ctx_clone.stop().unwrap();
             });
+            ctx_clone.stop().unwrap();
         });
 
         // Wait a bit to ensure the thread is waiting
@@ -200,6 +204,11 @@ mod tests {
             std::ptr::null_mut(),
             ctx_ptr as *mut _,
         );
+
+        // Event should be set, check with WaitForSingleObject
+        let wait_result = ctx.wait_for_stop(1);
+        assert!(wait_result.is_ok());
+        assert_eq!(wait_result.unwrap(), WAIT_OBJECT_0);
 
         // We only reach here if stop is called
         if ctx.wait_for_stop(1000).unwrap() != WAIT_OBJECT_0 {
