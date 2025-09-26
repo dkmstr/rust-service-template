@@ -1,10 +1,19 @@
 [package]
-name = "win-service-template"
+name = "service-template"
 version = "0.1.0"
 edition = "2024"
 
+
 [dependencies]
-# Windows API bindings
+# Async runtime
+tokio = { version = "1.47.1", features = ["full"] }
+
+# Logging
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+tracing-log = "0.2.0"
+
+[target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.1", features = [
     "Win32_Foundation",
     "Win32_System_Services",
@@ -12,11 +21,3 @@ windows = { version = "0.62.1", features = [
     "Win32_System_EventLog",
     "Win32_Security"
 ] }
-
-# async runtime
-tokio = { version = "1.47.1", features = ["full"] }
-
-# Logging
-tracing = "0.1.41"
-tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
-tracing-log = "0.2.0"
