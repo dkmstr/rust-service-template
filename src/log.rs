@@ -1,5 +1,5 @@
 // Copyright (c) 2025 Adolfo Gómez García <dkmaster@dkmon.com>
-// 
+//
 // This software is released under the MIT License.
 // https://opensource.org/licenses/MIT
 
@@ -54,6 +54,16 @@ pub fn setup_logging(level: &str) {
             .ok();
 
         info!("Logging initialized with level: {}", level);
+        info!("log_path resolved to: {}", log_path);
+        #[cfg(debug_assertions)]
+        {
+            use std::env;
+            info!("--- ENVIRONMENT VARIABLES ---");
+            for (key, value) in env::vars() {
+                info!("{} = {}", key, value);
+            }
+            info!("--- END ENVIRONMENT ---");
+        }
     });
 }
 

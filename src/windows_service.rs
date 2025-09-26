@@ -3,6 +3,7 @@ use windows::{
 };
 
 use crate::launcher;
+use crate::log::{info, debug};
 
 const SERVICE_NAME: PCWSTR = w!("RustExampleService");
 
@@ -31,6 +32,7 @@ impl ServiceContext {
         checkpoint: u32,
         wait_hint_ms: u32,
     ) -> Result<()> {
+        debug!("Reporting status: {:?}, checkpoint: {}, wait_hint: {}", current_state, checkpoint, wait_hint_ms);
         unsafe {
             let status = SERVICE_STATUS {
                 dwServiceType: SERVICE_USER_OWN_PROCESS,
@@ -52,6 +54,7 @@ impl ServiceContext {
     }
 
     pub fn stop(&self) -> Result<()> {
+        info!("Service stop requested");
         unsafe {
             SetEvent(self.stop_event)?;
         }
@@ -59,17 +62,20 @@ impl ServiceContext {
     }
 
     pub fn wait_for_stop(&self, timeout_ms: u32) -> Result<WAIT_EVENT> {
+        debug!("Waiting for service stop...");
         unsafe {
             let res = WaitForSingleObject(self.stop_event, timeout_ms);
             Ok(res)
         }
     }
 
-    pub fn close(&self) -> Result<()> {
+    pub fn close(&mut self) -> Result<()> {
+        debug!("Closing service context...");
         if !self.stop_event.is_invalid() {
             unsafe {
                 CloseHandle(self.stop_event)?;
             }
+            self.stop_event = HANDLE::default();
         }
         Ok(())
     }
@@ -112,6 +118,7 @@ extern "system" fn service_handler(
 
 extern "system" fn service_main(_argc: u32, _argv: *mut PWSTR) {
     unsafe {
+        info!("Service main started");
         // Register the service control handler, with our context
         let mut ctx = ServiceContext::new();
 
@@ -134,6 +141,7 @@ extern "system" fn service_main(_argc: u32, _argv: *mut PWSTR) {
         // Launch a thread that does some work and then signals the stop event
         let ctx_thread = ctx.clone();
         std::thread::spawn(move || {
+            debug!("Service worker thread started");
             // Execute async work
             launcher::run(ctx_thread.async_stop.clone());
             // When done, signal the service to stop
@@ -149,6 +157,7 @@ extern "system" fn service_main(_argc: u32, _argv: *mut PWSTR) {
 }
 
 pub fn run_service() -> Result<()> {
+    debug!("Running windows service...");
     // Service Table: StartServiceCtrlDispatcherW(*const SERVICE_TABLE_ENTRYW) -> Result<()>
     let table = [
         SERVICE_TABLE_ENTRYW {

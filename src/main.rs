@@ -1,6 +1,8 @@
 mod launcher;
 mod log;
 
+use log::info;
+
 #[cfg(target_os = "windows")]
 use windows::core::Result;
 #[cfg(target_os = "windows")]
@@ -9,6 +11,8 @@ mod windows_service;
 fn main() -> Result<()> {
     // Setup logging
     log::setup_logging("debug");
+
+    info!("Starting service...");
 
     crate::windows_service::run_service()?;
     Ok(())
