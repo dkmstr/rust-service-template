@@ -68,6 +68,9 @@ impl AsyncService {
                     return;
                 }
             }
+            if stop.is_notified() {
+                return;
+            }
             // Notify to stop
             stop.notify_waiters();
         }
