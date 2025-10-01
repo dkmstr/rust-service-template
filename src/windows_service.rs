@@ -1,11 +1,25 @@
+// Copyright (c) 2025 Adolfo Gómez García <dkmaster@dkmon.com>
+//
+// This software is released under the MIT License.
+// https://opensource.org/licenses/MIT
+
+/*!
+Author: Adolfo Gómez, dkmaster at dkmon dot com
+*/
+use std::sync::{Arc, OnceLock};
+
 use windows::{
     Win32::Foundation::*, Win32::System::Services::*, Win32::System::Threading::*, core::*,
 };
 
-use crate::launcher;
-use crate::log::{info, debug};
+use anyhow::Result;
+
+use crate::log::{debug, info};
+use crate::service::AsyncServiceTrait;
 
 const SERVICE_NAME: PCWSTR = w!("RustExampleService");
+
+static LAUNCHER: OnceLock<Arc<dyn AsyncServiceTrait>> = OnceLock::new();
 
 #[derive(Clone, Debug)]
 struct ServiceContext {
@@ -18,11 +32,11 @@ unsafe impl Send for ServiceContext {}
 unsafe impl Sync for ServiceContext {}
 
 impl ServiceContext {
-    fn new() -> Self {
+    fn new(async_stop: Arc<tokio::sync::Notify>) -> Self {
         Self {
             status_handle: SERVICE_STATUS_HANDLE(std::ptr::null_mut()),
             stop_event: unsafe { CreateEventW(None, true, false, None).unwrap() },
-            async_stop: std::sync::Arc::new(tokio::sync::Notify::new()),
+            async_stop,
         }
     }
 
@@ -32,7 +46,10 @@ impl ServiceContext {
         checkpoint: u32,
         wait_hint_ms: u32,
     ) -> Result<()> {
-        debug!("Reporting status: {:?}, checkpoint: {}, wait_hint: {}", current_state, checkpoint, wait_hint_ms);
+        debug!(
+            "Reporting status: {:?}, checkpoint: {}, wait_hint: {}",
+            current_state, checkpoint, wait_hint_ms
+        );
         unsafe {
             let status = SERVICE_STATUS {
                 dwServiceType: SERVICE_USER_OWN_PROCESS,
@@ -81,29 +98,23 @@ impl ServiceContext {
     }
 }
 
-impl Default for ServiceContext {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-// Firma del handler OK; devuelve DWORD
+// Handler signature OK; returns DWORD
 extern "system" fn service_handler(
     ctrl: u32,
     _event_type: u32,
     _event_data: *mut std::ffi::c_void,
-    _context: *mut std::ffi::c_void,
+    context: *mut std::ffi::c_void,
 ) -> u32 {
-    let ctx = unsafe { &mut *(_context as *mut ServiceContext) };
+    let ctx = unsafe { &mut *(context as *mut ServiceContext) };
 
     match ctrl {
         SERVICE_CONTROL_STOP => {
-            // Lanzamos un thread que hace el trabajo y va notificando progreso
+            // Spawn a thread that does the work and notifies progress
             let mut checkpoint = 1;
             ctx.async_stop.notify_waiters();
             while ctx.wait_for_stop(100).unwrap() == WAIT_TIMEOUT {
                 std::thread::sleep(std::time::Duration::from_millis(100));
-                // Avisar al SCM que seguimos en STOP_PENDING
+                // Notify the SCM that we're still in STOP_PENDING
                 let _ = ctx.report_status(SERVICE_STOP_PENDING, checkpoint, 10000);
                 checkpoint += 1;
             }
@@ -119,8 +130,10 @@ extern "system" fn service_handler(
 extern "system" fn service_main(_argc: u32, _argv: *mut PWSTR) {
     unsafe {
         info!("Service main started");
+        let launcher = LAUNCHER.get().expect("Launcher not set");
+
         // Register the service control handler, with our context
-        let mut ctx = ServiceContext::new();
+        let mut ctx = ServiceContext::new(launcher.get_stop_notify());
 
         let ctx_ptr: *mut ServiceContext = &mut ctx;
         ctx.status_handle = match RegisterServiceCtrlHandlerExW(
@@ -143,7 +156,7 @@ extern "system" fn service_main(_argc: u32, _argv: *mut PWSTR) {
         std::thread::spawn(move || {
             debug!("Service worker thread started");
             // Execute async work
-            launcher::run(ctx_thread.async_stop.clone());
+            launcher.run(ctx_thread.async_stop.clone());
             // When done, signal the service to stop
             ctx_thread.stop().unwrap();
         });
@@ -156,8 +169,12 @@ extern "system" fn service_main(_argc: u32, _argv: *mut PWSTR) {
     }
 }
 
-pub fn run_service() -> Result<()> {
+pub fn run_service<L: AsyncServiceTrait>(launcher: L) -> Result<()> {
     debug!("Running windows service...");
+    LAUNCHER
+        .set(Arc::new(launcher))
+        .map_err(|_| anyhow::anyhow!("Launcher already set"))?;
+
     // Service Table: StartServiceCtrlDispatcherW(*const SERVICE_TABLE_ENTRYW) -> Result<()>
     let table = [
         SERVICE_TABLE_ENTRYW {
@@ -182,7 +199,8 @@ mod tests {
 
     #[test]
     fn test_stop_signals_notify_and_event() {
-        let mut ctx = ServiceContext::new();
+        let async_stop = Arc::new(tokio::sync::Notify::new());
+        let mut ctx = ServiceContext::new(async_stop.clone());
         ctx.status_handle = SERVICE_STATUS_HANDLE::default(); // dummy
 
         let ctx_ptr: *mut ServiceContext = &mut ctx;
